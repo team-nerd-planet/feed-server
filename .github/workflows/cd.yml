@@ -41,7 +41,7 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/api-server:${{ steps.vars.outputs.short_sha }}
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/feed-server:${{ steps.vars.outputs.short_sha }}
 
       - name: Deploy to K8S
         uses: appleboy/ssh-action@v0.1.7
@@ -50,4 +50,4 @@ jobs:
           username: ${{ secrets.USERNAME }}
           password: ${{ secrets.PASSWORD }}
           port: ${{ secrets.PORT }}
-          script: kubectl -n ${{ secrets.NAMESPACE }} set image deploy/api-server api-server=${{ secrets.DOCKERHUB_USERNAME }}/api-server:${{ steps.vars.outputs.short_sha }}
+          script: kubectl -n ${{ secrets.NAMESPACE }} set image deploy/feed-server feed-server=${{ secrets.DOCKERHUB_USERNAME }}/feed-server:${{ steps.vars.outputs.short_sha }}
