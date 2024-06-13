@@ -3,7 +3,12 @@ from starlette.middleware.cors import CORSMiddleware
 from app.api.v1.api import api_router
 from app.core.config import settings
 from app.utils.fetch_rss_feeds import fetch_rss_feeds
+from app.utils.fetch_rss_feeds_test import fetch_rss_feeds_test
+from app.utils.model_test import model_test
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.jobstores.base import JobLookupError
+from apscheduler.triggers.cron import CronTrigger
+import pytz
 import os
 from dotenv import load_dotenv
 
@@ -14,8 +19,12 @@ app = FastAPI(
 )
 
 # 스케쥴러 매일 새벽 2시에 실행
+korea_timezone = pytz.timezone("Asia/Seoul")
+
 scheduler = AsyncIOScheduler()
-scheduler.add_job(fetch_rss_feeds, "cron", hour=2, minute=0)
+scheduler.add_job(
+    fetch_rss_feeds, CronTrigger(hour=2, minute=0, timezone=korea_timezone)
+)
 scheduler.start()
 
 # Set all CORS enabled origins
@@ -34,7 +43,7 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 # @app.on_event("startup")
 # async def startup_event():
 #     # 앱 시작 시 한 번 실행
-#     await fetch_rss_feeds()
+#     await fetch_rss_feeds_test(datetime(2024, 6, 10, 0, 0))
 
 
 def start_uvicorn():

@@ -145,8 +145,17 @@ feed_urls = [
     "https://techblog.uplus.co.kr/feed",
 ]
 
+
 def generate_insert_query(entry, feed_id):
-    fields = ["title", "description", "link", "thumbnail", "published", "guid", "feed_id"]
+    fields = [
+        "title",
+        "description",
+        "link",
+        "thumbnail",
+        "published",
+        "guid",
+        "feed_id",
+    ]
     values = {field: entry.get(field, "") for field in fields}
     values["feed_id"] = feed_id  # Ensure feed_id is set correctly
 
@@ -155,6 +164,7 @@ def generate_insert_query(entry, feed_id):
         values["published"] = datetime.datetime(*entry.published_parsed[:6])
 
     return fields, values
+
 
 async def fetch_rss_feeds():
     today = datetime.date.today()
@@ -166,28 +176,31 @@ async def fetch_rss_feeds():
     model = joblib.load(model_path)
 
     async with SessionLocal() as session:
-        insert_queries_array = []
         for idx, url in enumerate(feed_urls):
             feed = feedparser.parse(url)
             for entry in feed.entries:
                 if "published_parsed" not in entry or entry.published_parsed is None:
-                    continue
-                if (entry.published_parsed.tm_year >= tm_year and
-                    entry.published_parsed.tm_mon >= tm_mon and
-                    entry.published_parsed.tm_mday >= tm_mday):
-                    
+                    entry["published_parsed"] = datetime.datetime.now().timetuple()
+                if (
+                    entry.published_parsed.tm_year >= tm_year
+                    and entry.published_parsed.tm_mon >= tm_mon
+                    and entry.published_parsed.tm_mday >= tm_mday
+                ):
+
                     if "description" not in entry or entry.description is None:
                         entry["description"] = ""
                     else:
-                        #정규식으로 모든 쌍따옴표 제거
-                        entry["description"] = re.sub(r'"', '', entry["description"])
+                        # 정규식으로 모든 쌍따옴표 제거
+                        entry["description"] = re.sub(r'"', "", entry["description"])
                         entry["description"] = entry["description"][:100]
 
                     fields, values = generate_insert_query(entry, idx + 1)
-                    insert_query = text(f"""
+                    insert_query = text(
+                        f"""
                         INSERT INTO items ({", ".join(fields)})
                         VALUES ({", ".join([f":{field}" for field in fields])})
-                    """)
+                    """
+                    )
                     await session.execute(insert_query, values)
                     predictions = model.predict([entry.title])
                     result = predictions.tolist()
@@ -196,40 +209,48 @@ async def fetch_rss_feeds():
 
         rows = await session.execute(
             text("SELECT * FROM items WHERE published >= :published"),
-            {"published": day_before_datetime}
+            {"published": day_before_datetime},
         )
         items = rows.fetchall()
-        
+
         insert_tags_array = []
         insert_jobs_array = []
-        
+
         for row in items:
             predictions = model.predict([row.title])
             result = predictions.tolist()[0]
-            
-            insert_tags_array.append({
-                "item_id": row.id,
-                "job_tag_id": job_tags.get(result[0], 1)  # 기본값으로 1 사용
-            })
-            insert_jobs_array.append({
-                "item_id": row.id,
-                "skill_tag_id": skill_tags.get(result[1], 1)  # 기본값으로 1 사용
-            })
+
+            insert_tags_array.append(
+                {
+                    "item_id": row.id,
+                    "job_tag_id": job_tags.get(result[0], 1),  # 기본값으로 1 사용
+                }
+            )
+            insert_jobs_array.append(
+                {
+                    "item_id": row.id,
+                    "skill_tag_id": skill_tags.get(result[1], 1),  # 기본값으로 1 사용
+                }
+            )
 
         if insert_tags_array:
-            insert_tags_query = text("""
+            insert_tags_query = text(
+                """
                 INSERT INTO item_job_tags (item_id, job_tag_id)
                 VALUES (:item_id, :job_tag_id)
-            """)
+            """
+            )
             await session.execute(insert_tags_query, insert_tags_array)
 
         if insert_jobs_array:
-            insert_jobs_query = text("""
+            insert_jobs_query = text(
+                """
                 INSERT INTO item_skill_tags (item_id, skill_tag_id)
                 VALUES (:item_id, :skill_tag_id)
-            """)
+            """
+            )
             await session.execute(insert_jobs_query, insert_jobs_array)
 
         await session.commit()
-        
+
     return True
