@@ -5,6 +5,8 @@ import joblib
 from sqlalchemy import text
 from app.db.session import SessionLocal
 import re
+import requests
+from bs4 import BeautifulSoup
 
 job_tags = {
     "FE": 1,
@@ -146,6 +148,15 @@ feed_urls = [
 ]
 
 
+def get_thumbnail_from_meta(url):
+    response = requests.get(url)
+    soup = BeautifulSoup(response.content, "html.parser")
+    meta_tag = soup.find("meta", property="og:image")
+    if meta_tag:
+        return meta_tag["content"]
+    return ""
+
+
 def generate_insert_query(entry, feed_id):
     fields = [
         "title",
@@ -187,12 +198,28 @@ async def fetch_rss_feeds():
                     and entry.published_parsed.tm_mday >= tm_mday
                 ):
 
+                    # guid로 중복 체크
+                    guid = entry.get("guid", "")
+                    exists = await session.execute(
+                        text("SELECT id FROM items WHERE guid = :guid"),
+                        {"guid": guid},
+                    )
+                    if exists.scalar():
+                        continue
+
                     if "description" not in entry or entry.description is None:
                         entry["description"] = ""
                     else:
                         # 정규식으로 모든 쌍따옴표 제거
                         entry["description"] = re.sub(r'"', "", entry["description"])
                         entry["description"] = entry["description"][:100]
+
+                    thumbnail_url = entry.get("media_thumbnail", [{"url": None}])[0][
+                        "url"
+                    ]
+                    if not thumbnail_url:  # 썸네일 URL이 없으면 메타 데이터에서 추출
+                        thumbnail_url = get_thumbnail_from_meta(entry.link)
+                    entry["thumbnail"] = thumbnail_url
 
                     fields, values = generate_insert_query(entry, idx + 1)
                     insert_query = text(
