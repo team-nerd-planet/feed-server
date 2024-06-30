@@ -37,7 +37,6 @@ system_prompt = """
 
 async def fetch_summary(url: str) -> str:
     try:
-        print(url)
         completion = client.chat.completions.create(
             model="gpt-4o",
             messages=[

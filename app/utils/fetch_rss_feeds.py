@@ -7,6 +7,7 @@ from app.db.session import SessionLocal
 import re
 import requests
 from bs4 import BeautifulSoup
+from app.utils.fetch_summary import fetch_summary
 
 job_tags = {
     "FE": 1,
@@ -166,6 +167,7 @@ def generate_insert_query(entry, feed_id):
         "published",
         "guid",
         "feed_id",
+        "summary",
     ]
     values = {field: entry.get(field, "") for field in fields}
     values["feed_id"] = feed_id  # Ensure feed_id is set correctly
@@ -220,6 +222,21 @@ async def fetch_rss_feeds():
                     if not thumbnail_url:  # 썸네일 URL이 없으면 메타 데이터에서 추출
                         thumbnail_url = get_thumbnail_from_meta(entry.link)
                     entry["thumbnail"] = thumbnail_url
+
+                    # 여기서는 fetch_summary 함수를 사용 -> 요약 생성, 스킬, 직업 카테고리 추출
+                    # link는 무조건 있는 상태
+                    # 일단 없는지 확인하고 있으면 fetch_summary 함수 사용
+                    # 없으면 그냥 삽입
+
+                    if "link" not in entry or entry.link is None:
+                        continue
+
+                    summary, skill_category, job_category = await fetch_summary(entry.link)
+
+                    if not summary:
+                        summary = entry.description
+                    
+                    entry["summary"] = summary
 
                     fields, values = generate_insert_query(entry, idx + 1)
                     insert_query = text(
