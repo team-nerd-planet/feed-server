@@ -7,4 +7,6 @@ import os
 DATABASE_URL = 'postgresql+asyncpg://postgre:planetnerd1!@pg-ffp3k.vpc-pub-cdb-kr.ntruss.com:5432/postgres'
 
 engine = create_async_engine(DATABASE_URL, echo=True)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, class_=AsyncSession)
+SessionLocal = sessionmaker(
+    autocommit=False, autoflush=False, bind=engine, class_=AsyncSession
+)
