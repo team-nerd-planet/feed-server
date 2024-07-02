@@ -1,13 +1,14 @@
 import feedparser
 import datetime
-import os
-import joblib
-from sqlalchemy import text
-from app.db.session import SessionLocal
 import re
 import requests
 from bs4 import BeautifulSoup
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+import asyncio
 from app.utils.fetch_summary import fetch_summary
+from app.db.session import SessionLocal
+from app.db.models import Item, ItemJobTag, ItemSkillTag
 
 job_tags = {
     "FE": 1,
@@ -158,143 +159,95 @@ def get_thumbnail_from_meta(url):
     return ""
 
 
-def generate_insert_query(entry, feed_id):
-    fields = [
-        "title",
-        "description",
-        "link",
-        "thumbnail",
-        "published",
-        "guid",
-        "feed_id",
-        "summary",
-    ]
-    values = {field: entry.get(field, "") for field in fields}
-    values["feed_id"] = feed_id  # Ensure feed_id is set correctly
+async def fetch_summary_threaded(url):
+    return await fetch_summary(url)
 
-    # published 필드를 datetime 형식으로 변환
-    if "published_parsed" in entry:
-        values["published"] = datetime.datetime(*entry.published_parsed[:6])
 
-    return fields, values
+def parse_date(parsed_date):
+    return datetime.datetime(*parsed_date[:6])
+
+
+async def process_entry(
+    entry,
+    session,
+):
+    try:
+        summary, skill_category, job_category = await fetch_summary_threaded(entry.link)
+    except Exception as exc:
+        print(f"{entry.link} generated an exception: {exc}")
+        summary = entry.description if entry.description else ""
+
+    if not summary:
+        summary = entry.description if entry.description else ""
+
+    thumbnail_url = entry.get("media_thumbnail", [{"url": None}])[0]["url"]
+    if not thumbnail_url:
+        thumbnail_url = get_thumbnail_from_meta(entry.link)
+    entry["thumbnail"] = thumbnail_url
+
+    if "description" not in entry or entry.description is None:
+        entry["description"] = ""
+    else:
+        entry["description"] = re.sub(r'"', "", entry["description"])[:100]
+
+    published_date = parse_date(entry.published_parsed)
+
+    guid = entry.get("guid", "")
+    existing_item = await session.execute(select(Item).filter_by(guid=guid))
+    if existing_item.scalar_one_or_none():
+        return
+
+    new_item = Item(
+        title=entry.get("title", ""),
+        description=entry.get("description", ""),
+        link=entry.get("link", ""),
+        thumbnail=thumbnail_url,
+        published=published_date,
+        guid=guid,
+        feed_id=entry["feed_id"],
+        summary=summary,
+        likes=0,
+        views=0,
+    )
+
+    session.add(new_item)
+    await session.commit()
+    await session.refresh(new_item)
+
+    job_tag_id = job_tags.get(job_category, 1)
+    skill_tag_id = skill_tags.get(skill_category, 1)
+
+    new_item_job_tag = ItemJobTag(item_id=new_item.id, job_tag_id=job_tag_id)
+    new_item_skill_tag = ItemSkillTag(item_id=new_item.id, skill_tag_id=skill_tag_id)
+
+    session.add(new_item_job_tag)
+    session.add(new_item_skill_tag)
+
+    await session.commit()
 
 
 async def fetch_rss_feeds():
     today = datetime.date.today()
     day_before = today - datetime.timedelta(days=1)
     tm_year, tm_mon, tm_mday = day_before.year, day_before.month, day_before.day
-    day_before_datetime = datetime.datetime(tm_year, tm_mon, tm_mday)
+    entries = []
 
-    model_path = os.path.join("app", "text_classification_model.pkl")
-    model = joblib.load(model_path)
+    for idx, url in enumerate(feed_urls):
+        feed = feedparser.parse(url)
+        for entry in feed.entries:
+            if "published_parsed" not in entry or entry.published_parsed is None:
+                entry["published_parsed"] = datetime.datetime.now().timetuple()
+            published_date = parse_date(entry.published_parsed)
+            if (
+                published_date.year >= tm_year
+                and published_date.month >= tm_mon
+                and published_date.day >= tm_mday
+            ):
+                entry["feed_id"] = idx + 1
+                entries.append(entry)
 
     async with SessionLocal() as session:
-        for idx, url in enumerate(feed_urls):
-            feed = feedparser.parse(url)
-            for entry in feed.entries:
-                if "published_parsed" not in entry or entry.published_parsed is None:
-                    entry["published_parsed"] = datetime.datetime.now().timetuple()
-                if (
-                    entry.published_parsed.tm_year >= tm_year
-                    and entry.published_parsed.tm_mon >= tm_mon
-                    and entry.published_parsed.tm_mday >= tm_mday
-                ):
-
-                    # guid로 중복 체크
-                    guid = entry.get("guid", "")
-                    exists = await session.execute(
-                        text("SELECT id FROM items WHERE guid = :guid"),
-                        {"guid": guid},
-                    )
-                    if exists.scalar():
-                        continue
-
-                    if "description" not in entry or entry.description is None:
-                        entry["description"] = ""
-                    else:
-                        # 정규식으로 모든 쌍따옴표 제거
-                        entry["description"] = re.sub(r'"', "", entry["description"])
-                        entry["description"] = entry["description"][:100]
-
-                    thumbnail_url = entry.get("media_thumbnail", [{"url": None}])[0][
-                        "url"
-                    ]
-                    if not thumbnail_url:  # 썸네일 URL이 없으면 메타 데이터에서 추출
-                        thumbnail_url = get_thumbnail_from_meta(entry.link)
-                    entry["thumbnail"] = thumbnail_url
-
-                    # 여기서는 fetch_summary 함수를 사용 -> 요약 생성, 스킬, 직업 카테고리 추출
-                    # link는 무조건 있는 상태
-                    # 일단 없는지 확인하고 있으면 fetch_summary 함수 사용
-                    # 없으면 그냥 삽입
-
-                    if "link" not in entry or entry.link is None:
-                        continue
-
-                    summary, skill_category, job_category = await fetch_summary(entry.link)
-
-                    if not summary:
-                        summary = entry.description
-                    
-                    entry["summary"] = summary
-
-                    fields, values = generate_insert_query(entry, idx + 1)
-                    insert_query = text(
-                        f"""
-                        INSERT INTO items ({", ".join(fields)})
-                        VALUES ({", ".join([f":{field}" for field in fields])})
-                    """
-                    )
-                    await session.execute(insert_query, values)
-                    predictions = model.predict([entry.title])
-                    result = predictions.tolist()
-
-        await session.commit()
-
-        rows = await session.execute(
-            text("SELECT * FROM items WHERE published >= :published"),
-            {"published": day_before_datetime},
-        )
-        items = rows.fetchall()
-
-        insert_tags_array = []
-        insert_jobs_array = []
-
-        for row in items:
-            predictions = model.predict([row.title])
-            result = predictions.tolist()[0]
-
-            insert_tags_array.append(
-                {
-                    "item_id": row.id,
-                    "job_tag_id": job_tags.get(result[0], 1),  # 기본값으로 1 사용
-                }
-            )
-            insert_jobs_array.append(
-                {
-                    "item_id": row.id,
-                    "skill_tag_id": skill_tags.get(result[1], 1),  # 기본값으로 1 사용
-                }
-            )
-
-        if insert_tags_array:
-            insert_tags_query = text(
-                """
-                INSERT INTO item_job_tags (item_id, job_tag_id)
-                VALUES (:item_id, :job_tag_id)
-            """
-            )
-            await session.execute(insert_tags_query, insert_tags_array)
-
-        if insert_jobs_array:
-            insert_jobs_query = text(
-                """
-                INSERT INTO item_skill_tags (item_id, skill_tag_id)
-                VALUES (:item_id, :skill_tag_id)
-            """
-            )
-            await session.execute(insert_jobs_query, insert_jobs_array)
-
-        await session.commit()
+        tasks = [process_entry(entry, session) for entry in entries]
+        await asyncio.gather(*tasks)
 
     return True
