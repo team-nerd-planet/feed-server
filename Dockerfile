@@ -17,6 +17,7 @@ RUN poetry install --no-root
 COPY . .
 
 ENV DATABASE_URL 'postgresql+asyncpg://postgres:postgres@localhost:5432/postgres'
+ENV OPENAI_API_KEY 'sk-1234567890abcdef1234567890abcdef'
 
 # 배포시 3만 이상의 포트를 사용해야 함
 # 포트 설정 (애플리케이션 실행 포트) -> fastapi는 기본적으로 8000번 포트를 사용
