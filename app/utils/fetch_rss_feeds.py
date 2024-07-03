@@ -3,12 +3,12 @@ import datetime
 import re
 import requests
 from bs4 import BeautifulSoup
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
 import asyncio
 from app.utils.fetch_summary import fetch_summary
-from app.db.session import SessionLocal
 from app.db.models import Item, ItemJobTag, ItemSkillTag
+from app.db.session import SessionLocal
+from sqlalchemy.future import select
+from sqlalchemy import delete
 
 job_tags = {
     "FE": 1,
@@ -151,12 +151,16 @@ feed_urls = [
 
 
 def get_thumbnail_from_meta(url):
-    response = requests.get(url)
-    soup = BeautifulSoup(response.content, "html.parser")
-    meta_tag = soup.find("meta", property="og:image")
-    if meta_tag:
-        return meta_tag["content"]
-    return ""
+    try:
+        response = requests.get(url)
+        soup = BeautifulSoup(response.content, "html.parser")
+        meta_tag = soup.find("meta", property="og:image")
+        if meta_tag:
+            return meta_tag["content"]
+        return ""
+    except Exception as e:
+        print(e)
+        return ""
 
 
 async def fetch_summary_threaded(url):
@@ -167,63 +171,108 @@ def parse_date(parsed_date):
     return datetime.datetime(*parsed_date[:6])
 
 
-async def process_entry(
-    entry,
-    session,
-):
-    try:
-        summary, skill_category, job_category = await fetch_summary_threaded(entry.link)
-    except Exception as exc:
-        print(f"{entry.link} generated an exception: {exc}")
-        summary = entry.description if entry.description else ""
+async def process_entry(entry):
+    async with SessionLocal() as session:
+        try:
+            summary, skill_category, job_category = await fetch_summary_threaded(
+                entry.link
+            )
+        except Exception as exc:
+            print(f"{entry.link} generated an exception: {exc}")
+            summary = entry.description if entry.description else ""
 
-    if not summary:
-        summary = entry.description if entry.description else ""
+        if not summary:
+            summary = entry.description if entry.description else ""
 
-    thumbnail_url = entry.get("media_thumbnail", [{"url": None}])[0]["url"]
-    if not thumbnail_url:
-        thumbnail_url = get_thumbnail_from_meta(entry.link)
-    entry["thumbnail"] = thumbnail_url
+        thumbnail = entry.get("thumbnail", None)
 
-    if "description" not in entry or entry.description is None:
-        entry["description"] = ""
-    else:
-        entry["description"] = re.sub(r'"', "", entry["description"])[:100]
+        # 비어있다면...
+        if not thumbnail:
+            thumbnail = get_thumbnail_from_meta(entry.link)
+        entry["thumbnail"] = thumbnail
 
-    published_date = parse_date(entry.published_parsed)
+        if "description" not in entry or entry.description is None:
+            entry["description"] = ""
+        else:
+            entry["description"] = re.sub(r'"', "", entry["description"])[:100]
 
-    guid = entry.get("guid", "")
-    existing_item = await session.execute(select(Item).filter_by(guid=guid))
-    if existing_item.scalar_one_or_none():
-        return
+        if "published_parsed" not in entry or entry.published_parsed is None:
+            entry["published_parsed"] = datetime.datetime.now().timetuple()
 
-    new_item = Item(
-        title=entry.get("title", ""),
-        description=entry.get("description", ""),
-        link=entry.get("link", ""),
-        thumbnail=thumbnail_url,
-        published=published_date,
-        guid=guid,
-        feed_id=entry["feed_id"],
-        summary=summary,
-        likes=0,
-        views=0,
-    )
+        published_date = parse_date(entry.published_parsed)
 
-    session.add(new_item)
-    await session.commit()
-    await session.refresh(new_item)
+        guid = entry.get("guid", "")
+        result = await session.execute(select(Item).filter_by(guid=guid))
+        existing_item = result.scalars().first()
 
-    job_tag_id = job_tags.get(job_category, 1)
-    skill_tag_id = skill_tags.get(skill_category, 1)
+        # guid가 존재하고 이미 있는 아이템이라면 업데이트
+        if guid and existing_item:
+            existing_item.title = entry.get("title", existing_item.title)
+            existing_item.description = entry.get(
+                "description", existing_item.description
+            )
+            existing_item.link = entry.get("link", existing_item.link)
+            existing_item.thumbnail = entry.get("thumbnail", existing_item.thumbnail)
+            existing_item.published = published_date
+            existing_item.summary = summary
 
-    new_item_job_tag = ItemJobTag(item_id=new_item.id, job_tag_id=job_tag_id)
-    new_item_skill_tag = ItemSkillTag(item_id=new_item.id, skill_tag_id=skill_tag_id)
+            await session.commit()
 
-    session.add(new_item_job_tag)
-    session.add(new_item_skill_tag)
+            job_tag_id = job_tags.get(job_category, 1)
+            skill_tag_id = skill_tags.get(skill_category, 1)
 
-    await session.commit()
+            # 기존 태그 삭제
+            await session.execute(
+                delete(ItemJobTag).where(ItemJobTag.item_id == existing_item.id)
+            )
+            await session.execute(
+                delete(ItemSkillTag).where(ItemSkillTag.item_id == existing_item.id)
+            )
+
+            # 새로운 태그 추가
+            new_item_job_tag = ItemJobTag(
+                item_id=existing_item.id, job_tag_id=job_tag_id
+            )
+            new_item_skill_tag = ItemSkillTag(
+                item_id=existing_item.id, skill_tag_id=skill_tag_id
+            )
+
+            session.add(new_item_job_tag)
+            session.add(new_item_skill_tag)
+
+            await session.commit()
+            await session.refresh(existing_item)
+            return
+
+        new_item = Item(
+            title=entry.get("title", ""),
+            description=entry.get("description", ""),
+            link=entry.get("link", ""),
+            thumbnail=entry.get("thumbnail", ""),
+            published=published_date,
+            guid=guid,
+            feed_id=entry["feed_id"],
+            summary=summary,
+            likes=0,
+            views=0,
+        )
+
+        session.add(new_item)
+        await session.commit()
+        await session.refresh(new_item)
+
+        job_tag_id = job_tags.get(job_category, 1)
+        skill_tag_id = skill_tags.get(skill_category, 1)
+
+        new_item_job_tag = ItemJobTag(item_id=new_item.id, job_tag_id=job_tag_id)
+        new_item_skill_tag = ItemSkillTag(
+            item_id=new_item.id, skill_tag_id=skill_tag_id
+        )
+
+        session.add(new_item_job_tag)
+        session.add(new_item_skill_tag)
+
+        await session.commit()
 
 
 async def fetch_rss_feeds():
@@ -246,8 +295,7 @@ async def fetch_rss_feeds():
                 entry["feed_id"] = idx + 1
                 entries.append(entry)
 
-    async with SessionLocal() as session:
-        tasks = [process_entry(entry, session) for entry in entries]
-        await asyncio.gather(*tasks)
+    tasks = [process_entry(entry) for entry in entries]
+    await asyncio.gather(*tasks)
 
     return True

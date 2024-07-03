@@ -28,10 +28,15 @@ system_prompt = """
     빈 배열이 주어집니다. 이 배열에는 다음의 내용을 순서대로 담아주세요.
     
     1. URL의 내용을 요약하고 문자열로 배열에 추가해주세요.
-    2. 글의 스킬 카테고리를 TYPESCRIPT, PYTHON, KOTLIN, GO, RUBY, C++, C, JAVA, C#, PHP, ETC에서 선택하고 해당하는 문자열을 배열에 추가해주세요.
-    3. 글의 직업 카테고리를 FE, BE, DEVOPS, SECURITY, DATA, AI, LLM, BLOCKCHAIN, ETC에서 선택하고 해당하는 문자열을 배열에 추가해주세요.
-    마지막으로 배열 외에는 아무것도 추가하지 말고, 제출해주세요.
+    2. 글의 스킬 카테고리를 TYPESCRIPT, PYTHON, KOTLIN, GO, RUBY, C++, C, JAVA, C#, PHP, ETC에서만 선택하고 해당하는 문자열을 배열에 추가해주세요.
+    3. 글의 직업 카테고리를 FE, BE, DEVOPS, SECURITY, DATA, AI, LLM, BLOCKCHAIN, ETC에서만 선택하고 해당하는 문자열을 배열에 추가해주세요.
     --- END OF TASK ---
+
+    작업을 완료하면 배열을 반환해주세요.
+    배열외의 내용은 모두 무시됩니다.
+
+    백틱(`)을 사용한 코드 블록은 작성하지 마세요.
+    오직 배열만 반환해주세요.
     """
 
 
@@ -57,5 +62,7 @@ async def fetch_summary(url: str) -> str:
         return summary, skill_category, job_category
 
     except Exception as e:
-        print(e)
-        return "요약에 실패했습니다. 다시 시도해주세요.", None, None
+        # 요약에 실패하거나 -> 인덱스 에러가 발생하거나 -> 다른 예외가 발생하면
+        # 파싱에 실패했을 때 예외처리
+        print(f"link에서 오류 발생 url = {url} -> {e}")
+        return "", "ETC", "ETC"
