@@ -202,11 +202,17 @@ async def process_entry(entry):
         published_date = parse_date(entry.published_parsed)
 
         guid = entry.get("guid", "")
+
+        # 빈 guid라면 link로 대체
+        if not guid:
+            guid = entry.get("link", "")
+            entry["guid"] = guid
+
         result = await session.execute(select(Item).filter_by(guid=guid))
         existing_item = result.scalars().first()
 
         # guid가 존재하고 이미 있는 아이템이라면 업데이트
-        if guid and existing_item:
+        if existing_item:
             existing_item.title = entry.get("title", existing_item.title)
             existing_item.description = entry.get(
                 "description", existing_item.description
