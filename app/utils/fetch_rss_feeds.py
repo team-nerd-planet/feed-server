@@ -291,7 +291,7 @@ async def fetch_rss_feeds():
         feed = feedparser.parse(url)
         for entry in feed.entries:
             if "published_parsed" not in entry or entry.published_parsed is None:
-                entry["published_parsed"] = datetime.datetime.now().timetuple()
+                continue
             published_date = parse_date(entry.published_parsed)
             if (
                 published_date.year >= tm_year
